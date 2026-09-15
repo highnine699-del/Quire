@@ -9,15 +9,15 @@
     <AssemblyName>Quire</AssemblyName>
     <RootNamespace>Quire.UI</RootNamespace>
     <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
-    <Version>1.0.13</Version>
+    <Version>1.0.14</Version>
 
     <!-- Assembly metadata — shown in file properties, improves AV reputation heuristics -->
     <Company>Quire</Company>
     <Product>Quire</Product>
     <Copyright>Copyright © 2026 Quire</Copyright>
-    <AssemblyVersion>1.0.13.0</AssemblyVersion>
-    <FileVersion>1.0.13.0</FileVersion>
-    <InformationalVersion>1.0.13</InformationalVersion>
+    <AssemblyVersion>1.0.14.0</AssemblyVersion>
+    <FileVersion>1.0.14.0</FileVersion>
+    <InformationalVersion>1.0.14</InformationalVersion>
     <Description>Daily AI-generated technical concepts for your desktop</Description>
 
     <!-- Explicit app manifest — tells Windows this is a normal user-mode GUI app -->
@@ -36,6 +36,7 @@
   </ItemGroup>
 
 </Project>
+
 
 
 
