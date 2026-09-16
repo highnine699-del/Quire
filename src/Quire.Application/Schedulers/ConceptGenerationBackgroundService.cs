@@ -57,16 +57,10 @@ public class ConceptGenerationBackgroundService : BackgroundService
         _historyStore = historyStore;
         _logger       = logger;
 
-        // Forward DailyConceptScheduler events (local mode)
-        // QuotaExceededException is intercepted here before GenerationFailed
+        // Forward DailyConceptScheduler's ConceptSetGenerated (local mode).
+        // GenerationFailed is no longer forwarded from the scheduler because
+        // RunIfDueAsync now throws instead of catching — ExecuteAsync handles it.
         _scheduler.ConceptSetGenerated += set => ConceptSetReady?.Invoke(set);
-        _scheduler.GenerationFailed    += ex =>
-        {
-            if (ex is QuotaExceededException)
-                QuotaExceeded?.Invoke();
-            else
-                GenerationFailed?.Invoke(ex);
-        };
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -205,15 +199,19 @@ public class ConceptGenerationBackgroundService : BackgroundService
             catch (QuotaExceededException qex)
             {
                 _logger.LogWarning(qex, "Shared cloud quota reached for {Today}.", today);
-                QuotaExceeded?.Invoke();
-                return;
+                // Throw a QuotaExceededException so ExecuteAsync's catch intercepts it
+                // before PersistLastRun. The quota catch in ExecuteAsync fires QuotaExceeded
+                // event and skips PersistLastRun — today will retry tomorrow.
+                throw;
             }
 
-            // Still empty after refill attempt and no quota signal → real failure
+            // Still empty after refill attempt and no quota signal → real failure.
+            // THROW here instead of invoking GenerationFailed directly so that
+            // ExecuteAsync's catch block handles it — that catch sits BEFORE
+            // PersistLastRun, which must never run on a failed day.
             _logger.LogWarning("Cloud buffer exhausted and prefetch unavailable for {Today}.", today);
-            GenerationFailed?.Invoke(
-                new InvalidOperationException(
-                    "Cloud concept buffer is empty. Connect to the internet to refill."));
+            throw new InvalidOperationException(
+                "Cloud concept buffer is empty. Connect to the internet to refill.");
         }
     }
 

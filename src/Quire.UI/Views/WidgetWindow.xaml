@@ -38,12 +38,30 @@
          ROOT CARD
     ═══════════════════════════════════════════════════════════════ -->
     <Border x:Name="RootBorder"
-            Background="{StaticResource BrushBackground}"
+            Background="Transparent"
             BorderBrush="{StaticResource BrushBorder}"
             BorderThickness="1"
             CornerRadius="{StaticResource RadiusCard}">
 
-        <StackPanel>
+        <!-- Two-layer Grid: background Rectangle (opacity-controlled) sits BEHIND
+             all content. Opacity never touches text, buttons, or icons. -->
+        <Grid>
+            <!-- Layer 0: background-only — only this element changes alpha.
+                 Text and controls above are siblings, never children, so they
+                 remain at full opacity regardless of the slider value. -->
+            <Rectangle x:Name="BackgroundLayer"
+                       RadiusX="8"
+                       RadiusY="8">
+                <Rectangle.Fill>
+                    <!-- BackgroundBrush color is set from BrushBackground in code-behind.
+                         Alpha channel (A byte) is the only property that changes
+                         when the opacity slider moves. -->
+                    <SolidColorBrush x:Name="BackgroundBrush" Color="#1A1A2E"/>
+                </Rectangle.Fill>
+            </Rectangle>
+
+            <!-- Layer 1: all views — sits above the background, never affected by its alpha -->
+            <StackPanel>
 
             <!-- ══ UPDATE AVAILABLE BANNER ══════════════════════════ -->
             <Border x:Name="UpdateBanner"
@@ -677,5 +695,6 @@
             </Border>
 
         </StackPanel>
+        </Grid>
     </Border>
 </Window>

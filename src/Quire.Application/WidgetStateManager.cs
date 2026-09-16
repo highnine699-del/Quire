@@ -3,7 +3,7 @@ using Quire.Domain;
 namespace Quire.Application;
 
 /// <summary>
-/// Enforces the widget state machine. Only the five legal transitions are allowed;
+/// Enforces the widget state machine. Only the six legal transitions are allowed;
 /// any other trigger/state combination is silently ignored — never thrown.
 ///
 /// Legal transitions:
@@ -11,7 +11,8 @@ namespace Quire.Application;
 ///   Expanded + OutsideClick → Compact
 ///   Expanded + Timeout      → Compact
 ///   Expanded + Pin          → Pinned
-///   Pinned   + Unpin        → Compact
+///   Pinned   + Unpin        → Expanded  (returns to expanded view, not compact)
+///   Pinned   + OutsideClick → Compact   (deactivation while pinned collapses fully)
 /// </summary>
 public sealed class WidgetStateManager
 {
@@ -28,7 +29,11 @@ public sealed class WidgetStateManager
             (WidgetState.Expanded, WidgetTrigger.OutsideClick) => WidgetState.Compact,
             (WidgetState.Expanded, WidgetTrigger.Timeout)      => WidgetState.Compact,
             (WidgetState.Expanded, WidgetTrigger.Pin)          => WidgetState.Pinned,
-            (WidgetState.Pinned,   WidgetTrigger.Unpin)        => WidgetState.Compact,
+            // Unpin returns to Expanded (the view is still open) so the timer restarts
+            // and the user can keep reading. Use OutsideClick/Timeout to collapse fully.
+            (WidgetState.Pinned,   WidgetTrigger.Unpin)        => WidgetState.Expanded,
+            // Losing focus while pinned collapses to Compact (e.g. clicking away).
+            (WidgetState.Pinned,   WidgetTrigger.OutsideClick) => WidgetState.Compact,
             _                                                  => Current  // illegal — ignored
         };
 

@@ -4,8 +4,16 @@ using Quire.Domain;
 namespace Quire.Tests.Domain;
 
 /// <summary>
-/// Exercises all 5 legal transitions from the state machine table (Build Brief §0).
+/// Exercises all legal transitions from the state machine table.
 /// Also verifies that illegal triggers are silently ignored.
+///
+/// Transition table (post-audit fix):
+///   Compact  + Click        → Expanded
+///   Expanded + OutsideClick → Compact
+///   Expanded + Timeout      → Compact
+///   Expanded + Pin          → Pinned
+///   Pinned   + Unpin        → Expanded  (was Compact — bug fix)
+///   Pinned   + OutsideClick → Compact   (new transition)
 /// </summary>
 public sealed class WidgetStateManagerTests
 {
@@ -45,11 +53,23 @@ public sealed class WidgetStateManagerTests
     }
 
     [Fact]
-    public void Pinned_Unpin_GoesTo_Compact()
+    public void Pinned_Unpin_GoesTo_Expanded()
     {
+        // Unpin returns to Expanded so the timer restarts and the user keeps reading.
+        // Use OutsideClick or Timeout to collapse all the way to Compact.
         _sm.Fire(WidgetTrigger.Click);
         _sm.Fire(WidgetTrigger.Pin);
         _sm.Fire(WidgetTrigger.Unpin);
+        Assert.Equal(WidgetState.Expanded, _sm.Current);
+    }
+
+    [Fact]
+    public void Pinned_OutsideClick_GoesTo_Compact()
+    {
+        // Losing focus while pinned collapses fully (e.g. user clicks another window).
+        _sm.Fire(WidgetTrigger.Click);
+        _sm.Fire(WidgetTrigger.Pin);
+        _sm.Fire(WidgetTrigger.OutsideClick);
         Assert.Equal(WidgetState.Compact, _sm.Current);
     }
 
@@ -86,11 +106,14 @@ public sealed class WidgetStateManagerTests
         var raised = new List<WidgetState>();
         _sm.StateChanged += s => raised.Add(s);
 
-        _sm.Fire(WidgetTrigger.Click);           // Compact→Expanded
-        _sm.Fire(WidgetTrigger.Pin);             // Expanded→Pinned
-        _sm.Fire(WidgetTrigger.Unpin);           // Pinned→Compact
+        _sm.Fire(WidgetTrigger.Click);           // Compact  → Expanded
+        _sm.Fire(WidgetTrigger.Pin);             // Expanded → Pinned
+        _sm.Fire(WidgetTrigger.Unpin);           // Pinned   → Expanded (not Compact)
+        _sm.Fire(WidgetTrigger.OutsideClick);    // Expanded → Compact
 
-        Assert.Equal([WidgetState.Expanded, WidgetState.Pinned, WidgetState.Compact], raised);
+        Assert.Equal(
+            [WidgetState.Expanded, WidgetState.Pinned, WidgetState.Expanded, WidgetState.Compact],
+            raised);
     }
 
     [Fact]

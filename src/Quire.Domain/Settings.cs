@@ -36,6 +36,14 @@ public sealed record AppSettings(
     public const string DefaultProxyBaseUrl = "https://groqapikey.highnine699.workers.dev/v1";
 
     /// <summary>
+    /// Client secret sent as X-Quire-Client header to the default proxy.
+    /// Value is injected at build time — see Directory.Build.props + secrets.props.
+    /// Protects the shared Groq quota from direct abuse of the proxy URL.
+    /// Only sent to the default proxy — never to user-configured endpoints.
+    /// </summary>
+    public const string QuireClientSecret = BuildConstants.ClientSecret;
+
+    /// <summary>
     /// Returns the effective cloud ProviderSettings to use at runtime.
     /// If the user has set an AdvancedCloudProvider, that takes priority.
     /// Otherwise the default shared proxy is used (no key needed).

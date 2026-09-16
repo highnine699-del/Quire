@@ -19,9 +19,6 @@ public sealed class DailyConceptScheduler
     /// <summary>Raised when a full DailyConceptSet has been generated and persisted.</summary>
     public event Action<DailyConceptSet>? ConceptSetGenerated;
 
-    /// <summary>Raised when generation fails. Caller is responsible for UI (Retry / Open Settings).</summary>
-    public event Action<Exception>? GenerationFailed;
-
     public DailyConceptScheduler(
         IConceptProvider provider,
         IConceptHistoryStore history,
@@ -43,8 +40,6 @@ public sealed class DailyConceptScheduler
         var settings = await _settings.LoadAsync(cancellationToken);
         var category = settings.Topics.CategoryFor(today.DayOfWeek);
 
-        // Seed avoid-list from history, then grow it within this call to prevent
-        // intra-day duplicates across the 3 concepts.
         var avoidList = new List<string>(
             await _history.GetRecentTitlesAsync(30, cancellationToken));
 
@@ -52,29 +47,23 @@ public sealed class DailyConceptScheduler
             "Generating DailyConceptSet for {Date} ({Category}). Avoiding {Count} recent titles.",
             today, category, avoidList.Count);
 
-        try
+        // No try/catch here — exceptions propagate to ExecuteAsync's catch block,
+        // which sits BEFORE PersistLastRun. This ensures a failed day is never
+        // marked as "already ran" and will be retried on the next launch.
+        var concepts = new List<Concept>(3);
+        for (var i = 0; i < 3; i++)
         {
-            var concepts = new List<Concept>(3);
-            for (var i = 0; i < 3; i++)
-            {
-                var concept = await _provider.GenerateConceptAsync(
-                    category, avoidList, cancellationToken);
+            var concept = await _provider.GenerateConceptAsync(
+                category, avoidList, cancellationToken);
 
-                concepts.Add(concept);
-                avoidList.Add(concept.Title); // prevent intra-day duplicate
-                _logger.LogInformation("  [{Slot}/3] Generated: {Title}", i + 1, concept.Title);
-            }
-
-            var set = new DailyConceptSet(today, concepts.AsReadOnly());
-            await _history.AppendSetAsync(set, cancellationToken);
-
-            ConceptSetGenerated?.Invoke(set);
+            concepts.Add(concept);
+            avoidList.Add(concept.Title);
+            _logger.LogInformation("  [{Slot}/3] Generated: {Title}", i + 1, concept.Title);
         }
-        catch (Exception ex)
-        {
-            // Never crash. Caller surfaces Retry / Open AI Settings UI.
-            _logger.LogError(ex, "Concept generation failed for {Date}.", today);
-            GenerationFailed?.Invoke(ex);
-        }
+
+        var set = new DailyConceptSet(today, concepts.AsReadOnly());
+        await _history.AppendSetAsync(set, cancellationToken);
+
+        ConceptSetGenerated?.Invoke(set);
     }
 }

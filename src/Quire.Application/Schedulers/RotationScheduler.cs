@@ -18,7 +18,9 @@ public class RotationScheduler : IDisposable
     private readonly ILogger<RotationScheduler> _logger;
     private System.Threading.Timer? _timer;
     private DailyConceptSet? _currentSet;
-    private int _activeIndex;
+    // volatile: Tick() runs on a threadpool thread; AdvanceNow() and LoadSet() run on the
+    // UI thread. volatile ensures the threadpool sees the latest value without a full lock.
+    private volatile int _activeIndex;
 
     /// <summary>Raised whenever the active concept changes (on load and on each tick).</summary>
     public event Action<Concept>? ConceptRotated;
@@ -75,9 +77,15 @@ public class RotationScheduler : IDisposable
 
         if (_currentSet is null) return;
 
-        _activeIndex = (_activeIndex + 1) % _currentSet.Count;
-        _logger.LogDebug("RotationScheduler ticked to index {Index}.", _activeIndex);
-        ConceptRotated?.Invoke(_currentSet.GetByIndex(_activeIndex));
+        // Use Interlocked to atomically advance the index — Tick() runs on the threadpool
+        // concurrently with AdvanceNow() on the UI thread, so a plain read-modify-write
+        // on _activeIndex would be a data race on 32-bit and logically racy on all platforms.
+        var count    = _currentSet.Count;
+        var newIndex = Interlocked.Increment(ref _activeIndex) % count;
+        // Normalise the backing field to the valid range so it doesn't grow unboundedly.
+        Interlocked.Exchange(ref _activeIndex, newIndex);
+        _logger.LogDebug("RotationScheduler ticked to index {Index}.", newIndex);
+        ConceptRotated?.Invoke(_currentSet.GetByIndex(newIndex));
     }
 
     public void Dispose()

@@ -54,6 +54,7 @@ ehthumbs.db
 appsettings.*.json
 !appsettings.json
 secrets.json
+secrets.props
 .env
 
 # App data (user-specific, never in repo)

@@ -99,6 +99,17 @@ public sealed class OpenAiCompatibleProvider : IConceptProvider
             requestMessage.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", settings.ApiKey);
 
+        // Add the Quire client secret header when calling the default shared proxy.
+        // This protects the Groq quota from direct abuse — the Worker rejects requests
+        // without this header. Only sent to the default proxy, never to user-configured
+        // endpoints (advanced cloud override or local mode).
+        if (settings.BaseUrl.Contains(AppSettings.DefaultProxyBaseUrl.Split('/')[2],
+                StringComparison.OrdinalIgnoreCase))
+        {
+            requestMessage.Headers.TryAddWithoutValidation(
+                "X-Quire-Client", AppSettings.QuireClientSecret);
+        }
+
         var response = await _http.SendAsync(requestMessage, cancellationToken);
 
         // Detect shared-quota exhaustion (HTTP 429) before the generic EnsureSuccessStatusCode.
@@ -117,7 +128,13 @@ public sealed class OpenAiCompatibleProvider : IConceptProvider
         var payload = await response.Content.ReadFromJsonAsync<ChatResponse>(JsonOptions, cancellationToken)
             ?? throw new InvalidOperationException("Empty response body from AI provider.");
 
-        var raw = payload.Choices[0].Message.Content.Trim();
+        if (payload.Choices is not { Length: > 0 })
+            throw new InvalidOperationException("AI response contained no choices.");
+
+        var content = payload.Choices[0].Message?.Content
+            ?? throw new InvalidOperationException("AI response choice had no content.");
+
+        var raw = content.Trim();
 
         // Strip markdown code fences if the model wraps the JSON in ```json ... ```
         if (raw.StartsWith("```"))
@@ -130,6 +147,10 @@ public sealed class OpenAiCompatibleProvider : IConceptProvider
 
         var parsed = JsonSerializer.Deserialize<ConceptPayload>(raw, JsonOptions)
             ?? throw new InvalidOperationException("AI response could not be parsed as JSON.");
+
+        if (string.IsNullOrWhiteSpace(parsed.Title) || string.IsNullOrWhiteSpace(parsed.Explanation))
+            throw new InvalidOperationException(
+                "AI response JSON was missing required 'title' or 'explanation' fields.");
 
         return new Concept(
             Title:       parsed.Title,

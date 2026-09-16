@@ -219,6 +219,10 @@ public partial class WidgetWindow : Window
         }
         else
         {
+            // Clear any held animation clock before showing, so the window
+            // is never stuck at Opacity=0 from a previous AnimScaleOut run.
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 1.0;
             Show();
             Activate();
             _isWidgetVisible = true;
@@ -389,18 +393,55 @@ public partial class WidgetWindow : Window
         Top  = 20;
     }
 
-    private void UpdateBackgroundOpacity(double opacity) =>
-        RootBorder.Opacity = Math.Clamp(opacity, 0.5, 1.0);
+    private void UpdateBackgroundOpacity(double opacity)
+    {
+        // Clamp to 0.4–1.0 then convert to a 0–255 byte alpha value.
+        // Only the background Rectangle's brush alpha changes — text, buttons,
+        // and icons are siblings of the Rectangle, so they stay at full opacity.
+        var clamped = Math.Clamp(opacity, 0.4, 1.0);
+        var alpha   = (byte)Math.Round(clamped * 255);
+
+        // Sync the brush color to the current theme background, then apply alpha.
+        // This handles theme changes gracefully without a restart.
+        if (TryGetThemeBackgroundColor(out var baseColor))
+        {
+            BackgroundBrush.Color = Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B);
+        }
+        else
+        {
+            // Fallback: just change the alpha on whatever color is currently set
+            var c = BackgroundBrush.Color;
+            BackgroundBrush.Color = Color.FromArgb(alpha, c.R, c.G, c.B);
+        }
+    }
+
+    private static bool TryGetThemeBackgroundColor(out Color color)
+    {
+        if (System.Windows.Application.Current.Resources["BrushBackground"]
+                is SolidColorBrush brush)
+        {
+            color = brush.Color;
+            return true;
+        }
+        color = default;
+        return false;
+    }
 
     private void OnLocationChanged(object? sender, EventArgs e)
     {
-        _positionSaveTimer?.Stop();
-        _positionSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
-        _positionSaveTimer.Tick += async (_, _) =>
+        // Reuse the single timer — stop and restart the debounce window.
+        // Creating a new DispatcherTimer on every LocationChanged event (which fires
+        // on every drag pixel) allocates dozens of timers per drag operation.
+        if (_positionSaveTimer is null)
         {
-            _positionSaveTimer.Stop();
-            await SavePositionAsync();
-        };
+            _positionSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+            _positionSaveTimer.Tick += async (_, _) =>
+            {
+                _positionSaveTimer.Stop();
+                await SavePositionAsync();
+            };
+        }
+        _positionSaveTimer.Stop();
         _positionSaveTimer.Start();
     }
 
@@ -543,7 +584,19 @@ public partial class WidgetWindow : Window
 
         var shell = FindWindowEx(workerW, IntPtr.Zero, "SHELLDLL_DefView", null);
         if (shell != IntPtr.Zero)
-            workerW = FindWindowEx(progman, workerW, "WorkerW", null);
+        {
+            // The first WorkerW holds the desktop icons shell — the *second* one is
+            // the actual behind-desktop layer we want. If there is no second WorkerW
+            // (e.g. on systems without desktop icons visible), bail out rather than
+            // passing IntPtr.Zero to SetParent, which would reparent to the desktop root.
+            var nextWorkerW = FindWindowEx(progman, workerW, "WorkerW", null);
+            if (nextWorkerW == IntPtr.Zero)
+            {
+                _logger.LogWarning("Second WorkerW not found after SHELLDLL_DefView detected — aborting reparent.");
+                return false;
+            }
+            workerW = nextWorkerW;
+        }
 
         var result = SetParent(hwnd, workerW);
         if (result == IntPtr.Zero)
@@ -708,11 +761,20 @@ public partial class WidgetWindow : Window
                 PinButton.IsChecked     = false;
 
                 // Restore scale to 1 so the next expand starts from full size.
+                // Also release the ScaleX/Y animation clocks — HoldEnd would otherwise
+                // hold 0.85 as the animated base value and fight the direct property write.
                 if (RenderTransform is ScaleTransform st)
                 {
+                    st.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+                    st.BeginAnimation(ScaleTransform.ScaleYProperty, null);
                     st.ScaleX = 1.0;
                     st.ScaleY = 1.0;
                 }
+
+                // Clear the animation clock that AnimScaleOut left holding Opacity at 0.
+                // Without this, WPF's FillBehavior.HoldEnd keeps the window invisible.
+                BeginAnimation(OpacityProperty, null);
+                Opacity = 1.0;
 
                 ((Storyboard)FindResource("AnimFadeIn")).Begin(CompactView);
             };
@@ -736,8 +798,10 @@ public partial class WidgetWindow : Window
         UpdateExpandedContent();
         // Slide the expanded panel up (TranslateTransform on ExpandedView)
         // and simultaneously scale the whole window in (ScaleTransform on Window).
-        ((Storyboard)FindResource("AnimSlideInUp")).Begin(ExpandedView);
-        ((Storyboard)FindResource("AnimScaleIn")).Begin(this);
+        // Clone both storyboards — calling Begin() on the shared resource instance
+        // mutates it in place and can cause the From value to not reset on the second call.
+        ((Storyboard)FindResource("AnimSlideInUp")).Clone().Begin(ExpandedView);
+        ((Storyboard)FindResource("AnimScaleIn")).Clone().Begin(this);
     }
 
     private void ShowError(string message)
@@ -805,6 +869,12 @@ public partial class WidgetWindow : Window
         var newExplanation = _currentConcept.Explanation;
         var newCategory    = _currentConcept.Category;
         var newIndex       = _currentIndex;
+
+        // Cancel any in-progress fade animation clock before starting a new one.
+        // Without this, rapid AdvanceNow() calls stack two simultaneous Opacity clocks
+        // on ExpandedView and the HoldEnd from the previous AnimFadeOut fights the new one.
+        ExpandedView.BeginAnimation(UIElement.OpacityProperty, null);
+        ExpandedView.Opacity = 1.0;
 
         // Fade out the whole ExpandedView content panel as one unit (#3)
         var fadeOut = ((Storyboard)FindResource("AnimFadeOut")).Clone();
@@ -1027,18 +1097,32 @@ public partial class WidgetWindow : Window
         CompactView.Visibility = Visibility.Visible;
         _ = Task.Run(async () =>
         {
-            var settings = await _settingsStore.LoadAsync(CancellationToken.None);
-            if (settings.Mode == "cloud")
+            try
             {
-                await _prefetchService.RefillIfConnectedAsync(CancellationToken.None);
-                var set = await _prefetchService.TryConsumeAsync(CancellationToken.None);
-                if (set is not null) OnConceptSetReady(set);
-                else OnGenerationFailed(new InvalidOperationException(
-                    "Cloud buffer is still empty. Check your internet connection."));
+                var settings = await _settingsStore.LoadAsync(CancellationToken.None);
+                if (settings.Mode == "cloud")
+                {
+                    await _prefetchService.RefillIfConnectedAsync(CancellationToken.None);
+                    var set = await _prefetchService.TryConsumeAsync(CancellationToken.None);
+                    if (set is not null) OnConceptSetReady(set);
+                    else OnGenerationFailed(new InvalidOperationException(
+                        "Cloud buffer is still empty. Check your internet connection."));
+                }
+                else
+                {
+                    await _bgService.ForceRetryAsync(CancellationToken.None);
+                }
             }
-            else
+            catch (QuotaExceededException)
             {
-                await _bgService.ForceRetryAsync(CancellationToken.None);
+                // ForceRetryAsync can propagate a 429 when the user retries on an exhausted quota.
+                // Surface the quota view instead of the generic error view.
+                OnQuotaExceeded();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "ErrorRetry_Click background task failed.");
+                OnGenerationFailed(ex);
             }
         });
     }
@@ -1047,7 +1131,11 @@ public partial class WidgetWindow : Window
     {
         var settingsWin = _settingsWindowFactory();
         settingsWin.Owner  = this;
-        settingsWin.Closed += async (_, _) => await ReapplySettingsAsync();
+        settingsWin.Closed += async (_, _) =>
+        {
+            try   { await ReapplySettingsAsync(); }
+            catch (Exception ex) { _logger.LogError(ex, "Failed to reapply settings after window closed."); }
+        };
         settingsWin.ShowDialog();
     }
 
@@ -1077,14 +1165,28 @@ public partial class WidgetWindow : Window
         DownloadProgress.Value        = 0;
         DownloadProgress.Visibility   = Visibility.Visible;
 
+        // Cancel and replace the CTS on the UI thread before spawning the background task,
+        // so there is no race between the task reading/writing _downloadCts and OnClosed.
+        _downloadCts?.Cancel();
+        _downloadCts?.Dispose();
+        var cts = new CancellationTokenSource();
+        _downloadCts = cts;
+
         _ = Task.Run(async () =>
         {
-            var settings  = await _settingsStore.LoadAsync(CancellationToken.None);
-            var modelPath = GetModelPath(settings);
-            _downloadCts?.Cancel();
-            _downloadCts = new CancellationTokenSource();
-            await _downloadService.DownloadAsync(
-                settings.Provider.BaseUrl, modelPath, _downloadCts.Token);
+            try
+            {
+                var settings  = await _settingsStore.LoadAsync(cts.Token);
+                var modelPath = GetModelPath(settings);
+                await _downloadService.DownloadAsync(
+                    settings.Provider.BaseUrl, modelPath, cts.Token);
+            }
+            catch (OperationCanceledException) { /* download was cancelled — no error needed */ }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "DownloadRetry_Click background task failed.");
+                OnDownloadFailed(ex.Message);
+            }
         });
     }
 
@@ -1094,9 +1196,18 @@ public partial class WidgetWindow : Window
         FirstRunView.Visibility = Visibility.Collapsed;
         var settingsWin = _settingsWindowFactory();
         settingsWin.PreSelectMode("cloud");
-        settingsWin.Owner = this;
+        settingsWin.Owner  = this;
+        // Wire ReapplySettingsAsync the same way OpenSettings_Click does — this ensures
+        // the opacity, WorkerW mode, and scheduler state are refreshed after the dialog.
+        // Also avoids unconditionally showing CompactView before any concept exists.
+        settingsWin.Closed += async (_, _) =>
+        {
+            try   { await ReapplySettingsAsync(); }
+            catch (Exception ex) { _logger.LogError(ex, "Failed to reapply settings after SkipToCloud dialog."); }
+        };
         settingsWin.ShowDialog();
-        CompactView.Visibility = Visibility.Visible;
+        // CompactView is shown by ReapplySettingsAsync / the concept delivery pipeline,
+        // not forced here — avoids "Loading…" state with no concept loaded.
     }
 
     // ── Setup choice handlers ─────────────────────────────────────────────────
@@ -1163,8 +1274,7 @@ public partial class WidgetWindow : Window
 
     // ── Public surface for SettingsWindow opacity preview ────────────────────
 
-    public void SetBackgroundOpacity(double opacity) =>
-        RootBorder.Opacity = Math.Clamp(opacity, 0.4, 1.0);
+    public void SetBackgroundOpacity(double opacity) => UpdateBackgroundOpacity(opacity);
 
     // ── Close-to-tray + visibility flag (#5) ─────────────────────────────────
 

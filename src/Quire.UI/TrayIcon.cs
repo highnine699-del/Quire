@@ -99,6 +99,7 @@ public sealed class TrayIcon : IDisposable
     private readonly Window    _window;
     private readonly IntPtr    _hwnd;
     private readonly IntPtr    _hIcon;
+    private readonly bool      _ownsIcon;   // true only when icon came from ExtractIcon (not a shared system icon)
     private readonly Func<bool> _isVisible;   // (#5) sync flag supplier — avoids WPF async staleness
     private NOTIFYICONDATA     _nid;
     private bool               _disposed;
@@ -117,7 +118,7 @@ public sealed class TrayIcon : IDisposable
         _hwndSource = HwndSource.FromHwnd(_hwnd);
         _hwndSource?.AddHook(WndProc);
 
-        _hIcon = LoadAppIcon();
+        (_hIcon, _ownsIcon) = LoadAppIcon();
 
         _nid = new NOTIFYICONDATA
         {
@@ -141,10 +142,13 @@ public sealed class TrayIcon : IDisposable
 
     /// <summary>
     /// Loads the first icon from the running executable so the tray shows the
-    /// DesktopConcepts icon instead of the generic Windows application icon.
+    /// Quire icon instead of the generic Windows application icon.
     /// Falls back to IDI_APPLICATION if the exe has no embedded icon.
+    /// Returns the icon handle and a flag indicating whether the caller owns it
+    /// (only ExtractIcon returns an owned handle that must be freed with DestroyIcon;
+    /// LoadIcon with a null hInstance returns a shared system handle that must NOT be freed).
     /// </summary>
-    private static IntPtr LoadAppIcon()
+    private static (IntPtr hIcon, bool ownsIcon) LoadAppIcon()
     {
         try
         {
@@ -152,13 +156,13 @@ public sealed class TrayIcon : IDisposable
             if (!string.IsNullOrEmpty(exePath))
             {
                 var icon = ExtractIcon(IntPtr.Zero, exePath, 0);
-                if (icon != IntPtr.Zero) return icon;
+                if (icon != IntPtr.Zero) return (icon, true);
             }
         }
         catch { /* fall through to generic icon */ }
 
-        // Fallback: generic Windows application icon (IDI_APPLICATION = 32512)
-        return LoadIcon(IntPtr.Zero, (IntPtr)32512);
+        // Fallback: shared system icon — must NOT be passed to DestroyIcon.
+        return (LoadIcon(IntPtr.Zero, (IntPtr)32512), false);
     }
 
     // ── Win32 message pump hook ───────────────────────────────────────────────
@@ -227,10 +231,9 @@ public sealed class TrayIcon : IDisposable
         _hwndSource = null;
 
         // Free the GDI icon handle to prevent a handle leak on every app exit.
-        // IDI_APPLICATION (loaded via LoadIcon with hInstance=0) is a shared system icon
-        // and must NOT be destroyed — only icons loaded from the exe via ExtractIcon need freeing.
-        // We stored _hIcon at construction; if it came from ExtractIcon it is non-zero and unique.
-        if (_hIcon != IntPtr.Zero)
+        // Only icons loaded via ExtractIcon are owned — shared system icons (IDI_APPLICATION
+        // loaded via LoadIcon with hInstance=0) must NOT be passed to DestroyIcon.
+        if (_ownsIcon && _hIcon != IntPtr.Zero)
         {
             try { DestroyIcon(_hIcon); } catch { /* best-effort */ }
         }

@@ -21,6 +21,27 @@ public partial class App : System.Windows.Application
     {
         base.OnStartup(e);
 
+        try
+        {
+            await StartupCoreAsync();
+        }
+        catch (Exception ex)
+        {
+            // Unhandled startup failure — show a message before the process dies.
+            // async void would otherwise swallow this and crash silently.
+            Log.Fatal(ex, "Fatal error during startup.");
+            Log.CloseAndFlush();
+            MessageBox.Show(
+                $"Quire failed to start:\n\n{ex.Message}\n\nSee logs for details.",
+                "Quire — Startup Error",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            Shutdown(1);
+        }
+    }
+
+    private async Task StartupCoreAsync()
+    {
         var processStart = Stopwatch.GetTimestamp();
 
         // ── Serilog rolling file logger ───────────────────────────────────────
@@ -57,8 +78,13 @@ public partial class App : System.Windows.Application
                 services.AddSingleton<IConceptHistoryStore, MarkdownHistoryStore>();
                 services.AddSingleton<IConceptBufferStore, JsonConceptBufferStore>();
 
-                // AI provider — generic OpenAI-compatible endpoint
-                services.AddHttpClient<IConceptProvider, OpenAiCompatibleProvider>();
+                // AI provider — generic OpenAI-compatible endpoint.
+                // 45s timeout: covers slow local LM Studio cold-starts without letting
+                // a stalled server block the background service indefinitely.
+                services.AddHttpClient<IConceptProvider, OpenAiCompatibleProvider>(client =>
+                {
+                    client.Timeout = TimeSpan.FromSeconds(45);
+                });
 
                 // Model download service (local first-run)
                 services.AddHttpClient<ModelDownloadService>();
@@ -144,12 +170,22 @@ public partial class App : System.Windows.Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        if (_host is not null)
+        try
         {
-            await _host.StopAsync();
-            _host.Dispose();
+            if (_host is not null)
+            {
+                await _host.StopAsync();
+                _host.Dispose();
+            }
         }
-        Log.CloseAndFlush();
-        base.OnExit(e);
+        catch (Exception ex)
+        {
+            Log.Error(ex, "Error during host shutdown.");
+        }
+        finally
+        {
+            Log.CloseAndFlush();
+            base.OnExit(e);
+        }
     }
 }

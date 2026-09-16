@@ -137,20 +137,19 @@ public sealed class DailyConceptSchedulerTests
     }
 
     [Fact]
-    public async Task RunIfDueAsync_RaisesGenerationFailed_OnProviderException()
+    public async Task RunIfDueAsync_ThrowsOnProviderException()
     {
         var brokenProvider = new BrokenProvider();
         var history        = new FakeHistory();
-        Exception? captured = null;
         var scheduler = new DailyConceptScheduler(
             brokenProvider, history, new FakeSettings(),
             NullLogger<DailyConceptScheduler>.Instance);
-        scheduler.GenerationFailed += ex => captured = ex;
 
-        await scheduler.RunIfDueAsync(
-            DateOnly.FromDateTime(DateTime.Today), CancellationToken.None);
+        // RunIfDueAsync now throws — callers (ExecuteAsync) catch before PersistLastRun.
+        await Assert.ThrowsAsync<HttpRequestException>(() =>
+            scheduler.RunIfDueAsync(
+                DateOnly.FromDateTime(DateTime.Today), CancellationToken.None));
 
-        Assert.NotNull(captured);
         Assert.Empty(history.AppendedSets); // nothing persisted on failure
     }
 

@@ -6,12 +6,15 @@ namespace Quire.Tests.Application;
 
 /// <summary>
 /// Acceptance checklist items:
-///   - Airplane mode + local mode  → generation fails, GenerationFailed raised, nothing crashes
-///   - Airplane mode + cloud mode  → same — GenerationFailed raised, no crash
-///   - Config hand-corrupted       → LoadAsync falls back to defaults (covered in JsonSettingsStoreTests)
+///   - Airplane mode + local mode  → RunIfDueAsync throws, PersistLastRun skipped, nothing crashes at host level
+///   - Airplane mode + cloud mode  → same
+///   - ConceptSetGenerated NOT raised on failure
+///   - Nothing appended to History.md on failure
 ///
-/// These tests use a provider that simulates network failure (HttpRequestException),
-/// verifying the Application layer never propagates the exception to the caller.
+/// Contract change (audit fix): DailyConceptScheduler.RunIfDueAsync now throws on
+/// provider failure instead of catching internally. ExecuteAsync in
+/// ConceptGenerationBackgroundService catches BEFORE PersistLastRun — this ensures
+/// a failed day is retried on the next launch rather than permanently skipped.
 /// </summary>
 public sealed class OfflineGracefulFailureTests
 {
@@ -54,35 +57,33 @@ public sealed class OfflineGracefulFailureTests
     [Fact]
     public async Task LocalMode_ProviderOffline_RaisesGenerationFailed_DoesNotThrow()
     {
-        Exception? captured = null;
+        // RunIfDueAsync now throws — the caller (ExecuteAsync) catches it and
+        // invokes GenerationFailed before PersistLastRun. Test at the scheduler
+        // level: confirm it throws with the correct exception type.
         var scheduler = new DailyConceptScheduler(
             new OfflineProvider(), new EmptyHistory(), new LocalModeSettings(),
             NullLogger<DailyConceptScheduler>.Instance);
-        scheduler.GenerationFailed += ex => captured = ex;
 
-        // Must complete without throwing — Application layer catches internally
         var exception = await Record.ExceptionAsync(() =>
             scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None));
 
-        Assert.Null(exception);                  // no unhandled exception
-        Assert.NotNull(captured);                // GenerationFailed was raised
-        Assert.IsType<HttpRequestException>(captured); // correct exception type propagated to UI layer
+        // The scheduler now propagates exceptions — they are caught by ExecuteAsync
+        Assert.NotNull(exception);
+        Assert.IsType<HttpRequestException>(exception);
     }
 
     [Fact]
     public async Task CloudMode_ProviderOffline_RaisesGenerationFailed_DoesNotThrow()
     {
-        Exception? captured = null;
         var scheduler = new DailyConceptScheduler(
             new OfflineProvider(), new EmptyHistory(), new CloudModeSettings(),
             NullLogger<DailyConceptScheduler>.Instance);
-        scheduler.GenerationFailed += ex => captured = ex;
 
         var exception = await Record.ExceptionAsync(() =>
             scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None));
 
-        Assert.Null(exception);
-        Assert.NotNull(captured);
+        Assert.NotNull(exception);
+        Assert.IsType<HttpRequestException>(exception);
     }
 
     [Fact]
@@ -93,7 +94,9 @@ public sealed class OfflineGracefulFailureTests
             new OfflineProvider(), history, new LocalModeSettings(),
             NullLogger<DailyConceptScheduler>.Instance);
 
-        await scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None);
+        // Swallow the expected exception — we only care that nothing was appended
+        await Record.ExceptionAsync(() =>
+            scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None));
 
         Assert.Equal(0, history.AppendCallCount); // nothing persisted on failure
     }
@@ -107,7 +110,8 @@ public sealed class OfflineGracefulFailureTests
             NullLogger<DailyConceptScheduler>.Instance);
         scheduler.ConceptSetGenerated += _ => raised = true;
 
-        await scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None);
+        await Record.ExceptionAsync(() =>
+            scheduler.RunIfDueAsync(DateOnly.FromDateTime(DateTime.Today), CancellationToken.None));
 
         Assert.False(raised);
     }

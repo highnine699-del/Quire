@@ -17,4 +17,49 @@
     <EnableSourceLink>false</EnableSourceLink>
     <EmbedUntrackedSources>false</EmbedUntrackedSources>
   </PropertyGroup>
+
+  <!--
+    Load secrets.props if it exists (local dev + CI with the file present).
+    Falls back to an empty string so the project still builds without it
+    (e.g. forks, open-source contributors — cloud mode just won't use a secret).
+  -->
+  <PropertyGroup>
+    <QuireClientSecret Condition="'$(QuireClientSecret)' == ''"></QuireClientSecret>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)secrets.props"
+          Condition="Exists('$(MSBuildThisFileDirectory)secrets.props')"/>
+
+  <!--
+    Generate BuildConstants.cs in the Domain project's obj folder at build time.
+    This injects the secret as a C# string constant without it ever appearing
+    in any committed source file.
+  -->
+  <Target Name="GenerateBuildConstants"
+          BeforeTargets="BeforeBuild"
+          Condition="'$(MSBuildProjectName)' == 'Quire.Domain'">
+    <PropertyGroup>
+      <_BuildConstantsPath>$(IntermediateOutputPath)BuildConstants.cs</_BuildConstantsPath>
+      <_BuildConstantsContent>
+namespace Quire.Domain%3B
+
+/// &lt;summary&gt;
+/// Auto-generated at build time from secrets.props. Never committed to git.
+/// Contains build-time constants injected via MSBuild properties.
+/// &lt;/summary&gt;
+internal static class BuildConstants
+{
+    public const string ClientSecret = "$(QuireClientSecret)"%3B
+}
+      </_BuildConstantsContent>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_BuildConstantsPath)"
+                     Lines="$(_BuildConstantsContent)"
+                     Overwrite="true"
+                     WriteOnlyWhenDifferent="true"/>
+    <ItemGroup>
+      <Compile Include="$(_BuildConstantsPath)"/>
+    </ItemGroup>
+  </Target>
+
 </Project>
