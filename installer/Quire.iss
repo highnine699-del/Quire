@@ -96,3 +96,4 @@ Filename: "{cmd}"; Parameters: "/c taskkill /F /IM {#AppExeName} /T"; Flags: run
 
 
 
+
